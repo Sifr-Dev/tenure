@@ -10,9 +10,13 @@ internal static class CommandLine
         if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
         {
             Console.WriteLine("Usage: tenure diff <baseline.json> <candidate.json> [--fail-over <bytes>] [--allow <type>]");
+            Console.WriteLine("       tenure capture --pid <process-id> --output <snapshot.json> [--duration <milliseconds>]");
             Console.WriteLine("Compare retained bytes and object counts by type. Exit 1 when the budget is exceeded.");
             return 0;
         }
+
+        if (args[0] == "capture")
+            return await RunCapture(args);
 
         if (args[0] != "diff" || args.Length < 3)
         {
@@ -55,6 +59,48 @@ internal static class CommandLine
             return 0;
         }
         catch (Exception ex) when (ex is IOException or JsonException or InvalidDataException or ArgumentException)
+        {
+            Console.Error.WriteLine($"tenure: {ex.Message}");
+            return 2;
+        }
+    }
+
+    private static async Task<int> RunCapture(string[] args)
+    {
+        var output = "";
+        var duration = TimeSpan.FromSeconds(1);
+        int? pid = null;
+        for (var i = 1; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--pid" when i + 1 < args.Length && int.TryParse(args[++i], out var value):
+                    pid = value;
+                    break;
+                case "--output" when i + 1 < args.Length:
+                    output = args[++i];
+                    break;
+                case "--duration" when i + 1 < args.Length && int.TryParse(args[++i], out var value) && value > 0:
+                    duration = TimeSpan.FromMilliseconds(value);
+                    break;
+                default:
+                    Console.Error.WriteLine($"Invalid argument: {args[i]}");
+                    return 2;
+            }
+        }
+        if (pid is null || string.IsNullOrEmpty(output))
+        {
+            Console.Error.WriteLine("Expected: tenure capture --pid <process-id> --output <snapshot.json> [--duration <milliseconds>]");
+            return 2;
+        }
+        try
+        {
+            await using var stream = new FileStream(output, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.Asynchronous);
+            await HeapCapture.CaptureAsync(pid.Value, stream, duration);
+            Console.WriteLine($"Wrote heap snapshot to {output}");
+            return 0;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or ArgumentException or OperationCanceledException or TimeoutException or AggregateException)
         {
             Console.Error.WriteLine($"tenure: {ex.Message}");
             return 2;

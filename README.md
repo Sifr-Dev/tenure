@@ -2,7 +2,7 @@
 
 Tenure is a .NET CLI for detecting heap-retention regressions on Linux. It compares retained bytes and object counts by type between two snapshots and exits nonzero when a configured budget is exceeded.
 
-**Status: 0.x.** The current milestone is a deterministic snapshot format and comparison engine. Live EventPipe capture and root-path attribution are not yet implemented; this repository does not claim to replace `dotnet-gcdump` or a heap viewer.
+**Status: 0.x.** Snapshot capture, the versioned snapshot format, and comparison engine work on Linux. Root-path attribution and full retained-size calculations are not yet implemented; current `retainedBytes` are **shallow object sizes**, aggregated by type. Live EventPipe capture and root-path attribution are separate concerns; this repository does not claim to replace `dotnet-gcdump` or a heap viewer.
 
 ## Why
 
@@ -16,6 +16,13 @@ Requires a compatible .NET 10 SDK (`10.0.100` with `latestFeature` in `global.js
 dotnet test tests/Tenure.Tests/Tenure.Tests.csproj
 dotnet run --project src/Tenure -- diff baseline.json candidate.json --fail-over 1048576
 ```
+
+dotnet run --project src/Tenure -- capture --pid <process-id> --output snapshot.json --duration 2000
+```
+
+Capture attaches a real EventPipe session using the CLR heap-snapshot keywords, aggregates object sizes by type, and writes the versioned snapshot. It stops the session after the requested duration (up to five minutes), also when cancelled. Snapshot collection can force a full garbage collection; do not treat it as a zero-cost production profiler.
+
+`samples/AllocationWorkload` is a bounded fixture used to verify the capture path. A real two-second capture against it produced 2,337 type groups and a `System.Byte[]` group with 614 objects and 60,356 shallow bytes. That is a fixture result, not a benchmark claim.
 
 Example snapshot (version 1):
 
@@ -33,7 +40,7 @@ Types are sorted by ordinal name. Duplicate names, negative values, unsupported 
 
 ## Scope and limitations
 
-- Current snapshots contain type names, retained bytes, and object counts. There is no GC-root path yet.
+- Current snapshots contain type names, shallow object bytes, and object counts. There is no GC-root path or transitive retained-size calculation yet.
 - Snapshot capture from a running process is planned but not implemented.
 - Dumps can contain sensitive type names; do not publish them without review.
 - JIT and NativeAOT builds are both goals. NativeAOT distribution will use an explicit `linux-x64` RID and document its glibc requirement; no claim is made for `arch-x64` or every distribution.
