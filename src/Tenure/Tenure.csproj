@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>tenure</AssemblyName>
+    <RootNamespace>Tenure</RootNamespace>
+    <Version>0.1.0</Version>
+    <Description>Heap-retention regression checks for .NET applications on Linux.</Description>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>tenure</ToolCommandName>
+    <PackageId>Tenure</PackageId>
+  </PropertyGroup>
+</Project>
