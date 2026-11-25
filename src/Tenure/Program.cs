@@ -100,9 +100,10 @@ internal static class CommandLine
             Console.WriteLine($"Wrote heap snapshot to {output}");
             return 0;
         }
-        catch (Exception ex) when (ex is IOException or InvalidDataException or ArgumentException or OperationCanceledException or TimeoutException or AggregateException)
+        catch (Exception ex) when (ex is IOException or InvalidDataException or ArgumentException or OperationCanceledException or TimeoutException or AggregateException or Microsoft.Diagnostics.NETCore.Client.ServerNotAvailableException)
         {
             Console.Error.WriteLine($"tenure: {ex.Message}");
+            if (File.Exists(output)) File.Delete(output);
             return 2;
         }
     }
