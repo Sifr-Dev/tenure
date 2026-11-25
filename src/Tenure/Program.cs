@@ -10,7 +10,7 @@ internal static class CommandLine
         if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
         {
             Console.WriteLine("Usage: tenure diff <baseline.json> <candidate.json> [--fail-over <bytes>] [--allow <type>]");
-            Console.WriteLine("       tenure capture --pid <process-id> --output <snapshot.json> [--duration <milliseconds>]");
+            Console.WriteLine("       tenure capture --pid <process-id> --output <snapshot.json> [--duration <milliseconds>] [--root-analysis]");
             Console.WriteLine("Compare retained bytes and object counts by type. Exit 1 when the budget is exceeded.");
             return 0;
         }
@@ -70,10 +70,14 @@ internal static class CommandLine
         var output = "";
         var duration = TimeSpan.FromSeconds(1);
         int? pid = null;
+        var rootAnalysis = false;
         for (var i = 1; i < args.Length; i++)
         {
             switch (args[i])
             {
+                case "--root-analysis":
+                    rootAnalysis = true;
+                    break;
                 case "--pid" when i + 1 < args.Length && int.TryParse(args[++i], out var value):
                     pid = value;
                     break;
@@ -90,13 +94,13 @@ internal static class CommandLine
         }
         if (pid is null || string.IsNullOrEmpty(output))
         {
-            Console.Error.WriteLine("Expected: tenure capture --pid <process-id> --output <snapshot.json> [--duration <milliseconds>]");
+            Console.Error.WriteLine("Expected: tenure capture --pid <process-id> --output <snapshot.json> [--duration <milliseconds>] [--root-analysis]");
             return 2;
         }
         try
         {
             await using var stream = new FileStream(output, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.Asynchronous);
-            await HeapCapture.CaptureAsync(pid.Value, stream, duration);
+            await HeapCapture.CaptureAsync(pid.Value, stream, duration, rootAnalysis: rootAnalysis);
             Console.WriteLine($"Wrote heap snapshot to {output}");
             return 0;
         }

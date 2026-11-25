@@ -6,10 +6,12 @@ public sealed class HeapGraphBuilder
 {
     public sealed record Node(ulong Address, ulong TypeId, ulong ShallowSize, long EdgeCount);
     public sealed record Edge(ulong Source, ulong Target, int Field);
+    public sealed record RootEdge(ulong RootedNodeAddress, int Kind, int Flags, ulong RootId);
 
     private readonly Dictionary<ulong, Node> _nodes = new();
     private readonly Dictionary<ulong, string> _types = new();
     private readonly List<Edge> _edges = new();
+    private readonly List<RootEdge> _roots = new();
     private readonly Queue<(ulong Target, int Field)> _references = new();
     private readonly int _maximumNodes;
     private readonly List<Node> _orderedNodes = new();
@@ -57,11 +59,20 @@ public sealed class HeapGraphBuilder
                 _references.Enqueue((value.Target, value.ReferencingField));
             }
         };
+        parser.GCBulkRootEdge += data =>
+        {
+            for (var i = 0; i < data.Count; i++)
+            {
+                var value = data.Values(i);
+                _roots.Add(new(value.RootedNodeAddress, (int)value.GCRootKind, (int)value.GCRootFlag, value.GCRootID));
+            }
+        };
     }
 
     public IReadOnlyDictionary<ulong, Node> Nodes => _nodes;
     public IReadOnlyDictionary<ulong, string> Types => _types;
     public IReadOnlyList<Edge> Edges => _edges;
+    public IReadOnlyList<RootEdge> Roots => _roots;
 
     public void AddNode(Node node)
     {
@@ -76,6 +87,11 @@ public sealed class HeapGraphBuilder
         if (_references.Count >= _maximumEdges)
             throw new InvalidDataException("The graph exceeds the configured edge limit.");
         _references.Enqueue((target, field));
+    }
+
+    public void AddRoot(ulong address, int kind, int flags, ulong rootId)
+    {
+        _roots.Add(new(address, kind, flags, rootId));
     }
 
     public void CompleteGraph()
