@@ -32,6 +32,7 @@ public static class HeapCapture
             session.Stop();
         }
         await processing.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+        builder.CompleteGraph();
         var snapshot = builder.ToSnapshot();
         await snapshot.WriteAsync(output, cancellationToken);
     }

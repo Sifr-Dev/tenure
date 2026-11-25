@@ -10,7 +10,9 @@ public sealed class HeapGraphBuilder
     private readonly Dictionary<ulong, Node> _nodes = new();
     private readonly Dictionary<ulong, string> _types = new();
     private readonly List<Edge> _edges = new();
+    private readonly Queue<(ulong Target, int Field)> _references = new();
     private readonly int _maximumNodes;
+    private readonly List<Node> _orderedNodes = new();
     private readonly int _maximumEdges;
 
     public HeapGraphBuilder(int maximumNodes = 500_000, int maximumEdges = 2_000_000)
@@ -43,6 +45,7 @@ public sealed class HeapGraphBuilder
                     throw new InvalidDataException("The graph exceeds the configured node limit.");
                 if (value.Size > long.MaxValue) throw new InvalidDataException("An object is too large.");
                 _nodes[value.Address] = new(value.Address, value.TypeID, value.Size, value.EdgeCount);
+                _orderedNodes.Add(_nodes[value.Address]);
             }
         };
         parser.GCBulkEdge += data =>
@@ -51,9 +54,7 @@ public sealed class HeapGraphBuilder
             {
                 var value = data.Values(i);
                 if (_edges.Count >= _maximumEdges) throw new InvalidDataException("The graph exceeds the configured edge limit.");
-                // BulkEdge reports the target and the field from which it is referenced.
-                // The source is inferred only when a unique unambiguous owner is known.
-                _edges.Add(new(0, value.Target, value.ReferencingField));
+                _references.Enqueue((value.Target, value.ReferencingField));
             }
         };
     }
@@ -61,6 +62,37 @@ public sealed class HeapGraphBuilder
     public IReadOnlyDictionary<ulong, Node> Nodes => _nodes;
     public IReadOnlyDictionary<ulong, string> Types => _types;
     public IReadOnlyList<Edge> Edges => _edges;
+
+    public void AddNode(Node node)
+    {
+        if (_nodes.Count >= _maximumNodes && !_nodes.ContainsKey(node.Address))
+            throw new InvalidDataException("The graph exceeds the configured node limit.");
+        _nodes[node.Address] = node;
+        _orderedNodes.Add(node);
+    }
+
+    public void AddReference(ulong target, int field)
+    {
+        if (_references.Count >= _maximumEdges)
+            throw new InvalidDataException("The graph exceeds the configured edge limit.");
+        _references.Enqueue((target, field));
+    }
+
+    public void CompleteGraph()
+    {
+        _edges.Clear();
+        foreach (var node in _orderedNodes)
+        {
+            for (long i = 0; i < node.EdgeCount; i++)
+            {
+                if (!_references.TryDequeue(out var reference))
+                    throw new InvalidDataException("The graph ends before all outgoing references are present.");
+                _edges.Add(new(node.Address, reference.Target, reference.Field));
+            }
+        }
+        if (_references.Count != 0)
+            throw new InvalidDataException("The graph has references without a corresponding source node.");
+    }
 
     public HeapSnapshot ToSnapshot()
     {
