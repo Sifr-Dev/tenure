@@ -39,6 +39,9 @@ public static class HeapCapture
             Console.Error.WriteLine("Root-reachable shallow bytes (not exclusive dominator retention):");
             foreach (var type in graph.ComputeReachability().Take(20))
                 Console.Error.WriteLine($"{type.Name} | {type.ShallowBytes} | {type.ObjectCount}");
+            Console.Error.WriteLine("Exclusive dominator retention by root:");
+            foreach (var root in graph.ComputeExclusiveRetention().OrderByDescending(x => x.RetainedBytes).Take(20))
+                Console.Error.WriteLine($"kind={root.RootKind} id=0x{root.RootId:x} address=0x{root.RootAddress:x} | {root.RetainedBytes} bytes | {root.ObjectCount} objects");
             var exemplars = builder.Nodes.Keys.OrderBy(x => x).Select(graph.FindRootPath).Where(p => p is not null).Take(5);
             foreach (var path in exemplars)
                 Console.Error.WriteLine($"root path to 0x{path!.Address:x}: kind={path.RootKind} id=0x{path.RootId:x} via {string.Join(" -> ", path.Path.Select(x => $"0x{x:x}"))}");

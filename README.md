@@ -2,7 +2,7 @@
 
 Tenure is a .NET CLI for detecting heap-retention regressions on Linux. It compares retained bytes and object counts by type between two snapshots and exits nonzero when a configured budget is exceeded.
 
-**Status: 0.x.** Snapshot capture, the versioned snapshot format, and comparison engine work on Linux. Root-reachable shallow-byte analysis and deterministic root-path attribution are available with `capture --root-analysis`; exclusive dominator retention is not yet implemented. The existing version-1 snapshot `retainedBytes` remain **shallow object sizes**, aggregated by type, for compatibility. This repository does not claim to replace `dotnet-gcdump` or a heap viewer.
+**Status: 0.x.** Snapshot capture, the versioned snapshot format, and comparison engine work on Linux. Root-reachable shallow-byte analysis, exclusive dominator retention diagnostics, and deterministic root-path attribution are available with `capture --root-analysis`. The existing version-1 snapshot `retainedBytes` remain **shallow object sizes**, aggregated by type, for compatibility. This repository does not claim to replace `dotnet-gcdump` or a heap viewer.
 
 ## Why
 
@@ -22,7 +22,7 @@ dotnet run --project src/Tenure -- capture --pid <process-id> --output snapshot.
 
 Capture attaches a real EventPipe session using the CLR heap-snapshot keywords, aggregates object sizes by type, and writes the versioned snapshot. It stops the session after the requested duration (up to five minutes), also when cancelled. Snapshot collection can force a full garbage collection; do not treat it as a zero-cost production profiler.
 
-Add `--root-analysis` to print root-reachable shallow-byte totals and deterministic root paths to standard error. These totals include shared objects once, but are not exclusive dominator sizes: a shared object is counted once for the whole reachable graph, not claimed as uniquely retained by one root. The JSON snapshot remains version 1 and uses shallow sizes, so existing comparisons stay compatible.
+Add `--root-analysis` to print root-reachable shallow-byte totals, the 20 largest exclusive dominator-retention roots, and deterministic root paths to standard error. Reachability totals include shared objects once; exclusive retention counts an object under a root only when every path from any root passes through that root. The JSON snapshot remains version 1 and uses shallow sizes, so existing comparisons stay compatible. Dominator computation traverses the captured graph and adds CPU/memory cost beyond the capture itself; it is intended for diagnostics, not a zero-cost production profiler.
 
 `samples/AllocationWorkload` is a bounded fixture used to verify the capture path. A real two-second capture against it produced 2,337 type groups and a `System.Byte[]` group with 614 objects and 60,356 shallow bytes. That is a fixture result, not a benchmark claim.
 
@@ -42,7 +42,7 @@ Types are sorted by ordinal name. Duplicate names, negative values, unsupported 
 
 ## Scope and limitations
 
-- Current snapshots contain type names, shallow object bytes, and object counts. Exclusive dominator retention and stable per-type root attribution in a versioned snapshot format are not implemented yet; `--root-analysis` is a diagnostic view of the live graph.
+- Current snapshots contain type names, shallow object bytes, and object counts. Exclusive dominator retention is computed for `--root-analysis` diagnostics, but is not stored in the version-1 snapshot or used by `diff` yet.
 - Live snapshot capture is implemented and tested against a bounded workload. Unsupported targets fail with a diagnostic and no partial snapshot.
 - Dumps can contain sensitive type names; do not publish them without review.
 - JIT and NativeAOT builds are both goals. NativeAOT distribution will use an explicit `linux-x64` RID and document its glibc requirement; no claim is made for `arch-x64` or every distribution.
