@@ -57,6 +57,55 @@ public sealed class DiffReportTests
         Assert.Equal(snapshot.Types, decoded.Types);
     }
 
+    [Fact]
+    public async Task VersionTwoSnapshotsCarryRootKindRetentionAndRoundTrip()
+    {
+        var snapshot = HeapSnapshot.Create(
+            [HeapType.Create("App.Customer", 160, 3)],
+            [RootKindTotal.Create(RootKinds.Handle, 128, 2), RootKindTotal.Create(RootKinds.Stack, 32, 1)]);
+        await using var stream = new MemoryStream();
+        await snapshot.WriteAsync(stream, TestContext.Current.CancellationToken);
+        var text = Encoding.UTF8.GetString(stream.ToArray());
+        Assert.Contains("\"version\": 2", text);
+        Assert.Contains("\"rootKindRetention\"", text);
+        Assert.Contains("\"kind\": 2", text);
+        Assert.Contains("\"kind\": 0", text);
+
+        stream.Position = 0;
+        var decoded = await HeapSnapshot.ReadAsync(stream, TestContext.Current.CancellationToken);
+        Assert.Equal(snapshot.Types, decoded.Types);
+        Assert.Equal(snapshot.RootKindTotals, decoded.RootKindTotals);
+        Assert.True(decoded.HasRootKindRetention);
+    }
+
+    [Fact]
+    public async Task VersionOneSnapshotsRemainReadableAfterTheVersionTwoUpgrade()
+    {
+        const string legacy = """
+            {
+              "version": 1,
+              "types": [
+                { "name": "App.Customer", "retainedBytes": 160, "objectCount": 3 }
+              ]
+            }
+            """;
+        await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(legacy));
+        var snapshot = await HeapSnapshot.ReadAsync(stream, TestContext.Current.CancellationToken);
+        Assert.Equal(160, snapshot.Types.Single().RetainedBytes);
+        Assert.False(snapshot.HasRootKindRetention);
+    }
+
+    [Theory]
+    [InlineData("{\"version\":2,\"types\":[]}")]
+    [InlineData("{\"version\":2,\"types\":[],\"rootKindRetention\":[{\"kind\":1,\"retainedBytes\":1,\"objectCount\":1},{\"kind\":1,\"retainedBytes\":2,\"objectCount\":1}]}")]
+    [InlineData("{\"version\":1,\"types\":[],\"rootKindRetention\":[{\"kind\":1,\"retainedBytes\":1,\"objectCount\":1}]}")]
+    [InlineData("{\"version\":2,\"types\":[],\"rootKindRetention\":[{\"kind\":-1,\"retainedBytes\":1,\"objectCount\":1}]}")]
+    public async Task InconsistentOrInvalidRootKindDeclarationsAreRejected(string json)
+    {
+        await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+        await Assert.ThrowsAnyAsync<Exception>(() => HeapSnapshot.ReadAsync(stream, TestContext.Current.CancellationToken));
+    }
+
     [Theory]
     [InlineData("not json")]
     [InlineData("{}")]
