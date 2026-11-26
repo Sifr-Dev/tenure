@@ -19,3 +19,45 @@ jobs:
       - run: dotnet restore tests/Tenure.Tests/Tenure.Tests.csproj --locked-mode
       - run: dotnet test tests/Tenure.Tests/Tenure.Tests.csproj --no-restore --nologo
       - run: dotnet build src/Tenure/Tenure.csproj --no-restore -c Release
+
+  package:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore src/Tenure/Tenure.csproj --locked-mode
+      - name: Pack
+        run: dotnet pack src/Tenure/Tenure.csproj --no-restore -c Release -o artifacts --nologo
+      - name: Verify the package is a tool that installs and gates
+        run: |
+          set -euo pipefail
+          package=$(find artifacts -name 'Tenure.*.nupkg' | head -1)
+          test -n "$package"
+          version=$(python3 -c "import re,sys;print(re.search(r'<Version>([^<]+)</Version>', open('src/Tenure/Tenure.csproj').read()).group(1))")
+          case "$package" in *"Tenure.$version.nupkg") ;; *) echo "package version does not match csproj $version" >&2; exit 1 ;; esac
+          python3 - "$package" <<'PY'
+          import sys, zipfile
+          names = zipfile.ZipFile(sys.argv[1]).namelist()
+          assert "README.md" in names, "package must embed the readme"
+          assert any(n.endswith("DotnetToolSettings.xml") for n in names), "package must be a dotnet tool"
+          assert any(n.endswith("/tenure.dll") for n in names), "package must contain the tenure assembly"
+          PY
+          work=$(mktemp -d)
+          cd "$work"
+          dotnet new tool-manifest >/dev/null
+          dotnet tool install Tenure --version 0.1.0 --add-source "$OLDPWD/artifacts" --ignore-failed-sources
+          dotnet tenure --help | grep -q -- '--by-root-kind'
+          printf '{"version":2,"types":[{"name":"A","retainedBytes":10,"objectCount":1}],"rootKindRetention":[{"kind":2,"retainedBytes":100,"objectCount":1}]}' > baseline.json
+          printf '{"version":2,"types":[{"name":"A","retainedBytes":60,"objectCount":3}],"rootKindRetention":[{"kind":2,"retainedBytes":500,"objectCount":5}]}' > candidate.json
+          if dotnet tenure diff baseline.json candidate.json --by-root-kind --fail-over-root-kind 100; then
+            echo "expected the root-kind gate to fail" >&2
+            exit 1
+          fi
+          dotnet tenure diff baseline.json candidate.json --by-root-kind --fail-over-root-kind 400
+          printf '{"version":1,"types":[]}' > legacy.json
+          if dotnet tenure diff legacy.json baseline.json --by-root-kind; then
+            echo "expected --by-root-kind to refuse a version-1 snapshot" >&2
+            exit 1
+          fi
