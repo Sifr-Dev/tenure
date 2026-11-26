@@ -4,6 +4,7 @@ public sealed class RetentionGraph
 {
     public sealed record TypeReachability(string Name, long ShallowBytes, long ObjectCount);
     public sealed record RootRetention(int RootKind, ulong RootId, ulong RootAddress, long RetainedBytes, long ObjectCount);
+    public sealed record RootKindRetention(int RootKind, long RetainedBytes, long ObjectCount);
     public sealed record RootPath(ulong Address, int RootKind, ulong RootId, ulong RootAddress, IReadOnlyList<ulong> Path);
 
     private const ulong VirtualRoot = 0;
@@ -63,6 +64,44 @@ public sealed class RetentionGraph
     {
         TraverseRoots();
         ComputeDominators();
+        var children = DominatorChildren();
+        var results = new List<RootRetention>();
+        foreach (var root in _roots.Values.OrderBy(r => r.RootedNodeAddress))
+        {
+            if (!_reachable.Contains(root.RootedNodeAddress)) continue;
+            var dominated = DominatedBy(root.RootedNodeAddress, children);
+            results.Add(new RootRetention(root.Kind, root.RootId, root.RootedNodeAddress, ShallowBytes(dominated), dominated.Count));
+        }
+        return results;
+    }
+
+    /// <summary>
+    /// Partitions reachable objects by the <paramref name="kind"/> of the root that exclusively
+    /// retains them. Roots occupy disjoint dominator subtrees, so every object is counted at most
+    /// once and objects not dominated by any root are excluded. The resulting bytes are therefore
+    /// a lower bound on root-reachable bytes whenever a root shares an object.
+    /// </summary>
+    public IReadOnlyList<RootKindRetention> ComputeRootKindRetention()
+    {
+        TraverseRoots();
+        ComputeDominators();
+        var children = DominatorChildren();
+        var totals = new Dictionary<int, (long Bytes, long Count)>();
+        foreach (var root in _roots.Values.OrderBy(r => r.RootedNodeAddress))
+        {
+            if (!_reachable.Contains(root.RootedNodeAddress)) continue;
+            var dominated = DominatedBy(root.RootedNodeAddress, children);
+            totals.TryGetValue(root.Kind, out var current);
+            current.Bytes += ShallowBytes(dominated);
+            current.Count += dominated.Count;
+            totals[root.Kind] = current;
+        }
+        return totals.Select(x => new RootKindRetention(x.Key, x.Value.Bytes, x.Value.Count))
+            .OrderByDescending(x => x.RetainedBytes).ThenBy(x => x.RootKind).ToArray();
+    }
+
+    private Dictionary<ulong, List<ulong>> DominatorChildren()
+    {
         var children = new Dictionary<ulong, List<ulong>>();
         foreach (var address in _reachable)
         {
@@ -75,25 +114,29 @@ public sealed class RetentionGraph
             }
             list.Add(address);
         }
-        var results = new List<RootRetention>();
-        foreach (var root in _roots.Values.OrderBy(r => r.RootedNodeAddress))
+        return children;
+    }
+
+    private HashSet<ulong> DominatedBy(ulong rootAddress, Dictionary<ulong, List<ulong>> children)
+    {
+        var dominated = new HashSet<ulong>();
+        var queue = new Queue<ulong>();
+        queue.Enqueue(rootAddress);
+        while (queue.Count > 0)
         {
-            if (!_reachable.Contains(root.RootedNodeAddress)) continue;
-            var dominated = new HashSet<ulong>();
-            var queue = new Queue<ulong>();
-            queue.Enqueue(root.RootedNodeAddress);
-            while (queue.Count > 0)
-            {
-                var current = queue.Dequeue();
-                if (!dominated.Add(current)) continue;
-                if (!children.TryGetValue(current, out var list)) continue;
-                foreach (var child in list) queue.Enqueue(child);
-            }
-            long bytes = 0;
-            foreach (var address in dominated) bytes += (long)_nodes[address].ShallowSize;
-            results.Add(new RootRetention(root.Kind, root.RootId, root.RootedNodeAddress, bytes, dominated.Count));
+            var current = queue.Dequeue();
+            if (!dominated.Add(current)) continue;
+            if (!children.TryGetValue(current, out var list)) continue;
+            foreach (var child in list) queue.Enqueue(child);
         }
-        return results;
+        return dominated;
+    }
+
+    private long ShallowBytes(IEnumerable<ulong> addresses)
+    {
+        long bytes = 0;
+        foreach (var address in addresses) bytes += (long)_nodes[address].ShallowSize;
+        return bytes;
     }
 
     public RootPath? FindRootPath(ulong address)

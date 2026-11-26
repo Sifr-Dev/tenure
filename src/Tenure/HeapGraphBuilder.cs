@@ -110,7 +110,7 @@ public sealed class HeapGraphBuilder
             throw new InvalidDataException("The graph has references without a corresponding source node.");
     }
 
-    public HeapSnapshot ToSnapshot()
+    public HeapSnapshot ToSnapshot(IEnumerable<RootKindTotal>? rootKindTotals = null)
     {
         var groups = new Dictionary<string, (long Bytes, long Count)>(StringComparer.Ordinal);
         foreach (var node in _nodes.Values)
@@ -121,6 +121,6 @@ public sealed class HeapGraphBuilder
             aggregate.Count += 1;
             groups[name] = aggregate;
         }
-        return HeapSnapshot.Create(groups.Select(g => HeapType.Create(g.Key, g.Value.Bytes, g.Value.Count)));
+        return HeapSnapshot.Create(groups.Select(g => HeapType.Create(g.Key, g.Value.Bytes, g.Value.Count)), rootKindTotals);
     }
 }
