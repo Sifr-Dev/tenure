@@ -35,7 +35,7 @@ public sealed class HeapGraphBuilder
                 var value = data.Values(i);
                 if (string.IsNullOrWhiteSpace(value.TypeName) || value.TypeName.Length > 4096)
                     throw new InvalidDataException("A type name is missing or too long.");
-                _types[value.TypeID] = value.TypeName;
+                AddType(value.TypeID, value.TypeName);
             }
         };
         parser.GCBulkNode += data =>
@@ -74,6 +74,14 @@ public sealed class HeapGraphBuilder
     public IReadOnlyList<Edge> Edges => _edges;
     public IReadOnlyList<RootEdge> Roots => _roots;
 
+    /// <summary>Registers the name of a type id observed in the capture.</summary>
+    public void AddType(ulong typeId, string name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name.Length > 4096)
+            throw new InvalidDataException("A type name is missing or too long.");
+        _types[typeId] = name;
+    }
+
     public void AddNode(Node node)
     {
         if (_nodes.Count >= _maximumNodes && !_nodes.ContainsKey(node.Address))
@@ -110,7 +118,7 @@ public sealed class HeapGraphBuilder
             throw new InvalidDataException("The graph has references without a corresponding source node.");
     }
 
-    public HeapSnapshot ToSnapshot(IEnumerable<RootKindTotal>? rootKindTotals = null)
+    public HeapSnapshot ToSnapshot(IEnumerable<RootKindTotal>? rootKindTotals = null, IEnumerable<OwnershipGroup>? ownership = null)
     {
         var groups = new Dictionary<string, (long Bytes, long Count)>(StringComparer.Ordinal);
         foreach (var node in _nodes.Values)
@@ -121,6 +129,6 @@ public sealed class HeapGraphBuilder
             aggregate.Count += 1;
             groups[name] = aggregate;
         }
-        return HeapSnapshot.Create(groups.Select(g => HeapType.Create(g.Key, g.Value.Bytes, g.Value.Count)), rootKindTotals);
+        return HeapSnapshot.Create(groups.Select(g => HeapType.Create(g.Key, g.Value.Bytes, g.Value.Count)), rootKindTotals, ownership);
     }
 }

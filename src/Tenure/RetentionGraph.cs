@@ -6,6 +6,13 @@ public sealed class RetentionGraph
     public sealed record RootRetention(int RootKind, ulong RootId, ulong RootAddress, long RetainedBytes, long ObjectCount);
     public sealed record RootKindRetention(int RootKind, long RetainedBytes, long ObjectCount);
     public sealed record RootPath(ulong Address, int RootKind, ulong RootId, ulong RootAddress, IReadOnlyList<ulong> Path);
+    public sealed record TypeOwnership(
+        int RootKind,
+        string TypeName,
+        long RetainedBytes,
+        long ObjectCount,
+        int RootCount,
+        OwnershipEvidence Evidence);
 
     private const ulong VirtualRoot = 0;
     private readonly IReadOnlyDictionary<ulong, HeapGraphBuilder.Node> _nodes;
@@ -98,6 +105,166 @@ public sealed class RetentionGraph
         }
         return totals.Select(x => new RootKindRetention(x.Key, x.Value.Bytes, x.Value.Count))
             .OrderByDescending(x => x.RetainedBytes).ThenBy(x => x.RootKind).ToArray();
+    }
+
+    /// <summary>
+    /// Refines exclusive dominator retention by the type of each retained object, so a report can
+    /// say which objects a root kind is holding rather than only how many bytes. Each group carries
+    /// the shortest observed ownership chain from a dominator root to a representative object of
+    /// that type, expressed as type names because heap addresses are not stable between captures.
+    /// Group bytes sum exactly to <see cref="ComputeRootKindRetention"/> for the same graph.
+    /// </summary>
+    public IReadOnlyList<TypeOwnership> ComputeTypeOwnership()
+    {
+        TraverseRoots();
+        ComputeDominators();
+        var children = DominatorChildren();
+        var groups = new Dictionary<(int Kind, string Type), TypeBucket>();
+        var rootOrder = _roots.Values.OrderBy(r => r.RootedNodeAddress).ToArray();
+        foreach (var root in rootOrder)
+        {
+            if (!_reachable.Contains(root.RootedNodeAddress)) continue;
+            var perType = new Dictionary<string, TypeBucket>(StringComparer.Ordinal);
+            foreach (var address in DominatedBy(root.RootedNodeAddress, children).OrderBy(x => x))
+            {
+                var node = _nodes[address];
+                var name = TypeNameOf(node);
+                if (!perType.TryGetValue(name, out var bucket))
+                {
+                    bucket = new TypeBucket(roots: 1);
+                    perType[name] = bucket;
+                }
+                bucket.Add(_depth[address], address, (long)node.ShallowSize);
+            }
+            foreach (var (name, bucket) in perType)
+            {
+                var key = (root.Kind, name);
+                if (!groups.TryGetValue(key, out var aggregate))
+                {
+                    aggregate = new TypeBucket();
+                    groups[key] = aggregate;
+                }
+                aggregate.Merge(bucket);
+            }
+        }
+        return groups
+            .Select(group => new TypeOwnership(
+                group.Key.Kind,
+                group.Key.Type,
+                group.Value.Bytes,
+                group.Value.Count,
+                group.Value.Roots,
+                group.Value.BuildEvidence(this)))
+            .OrderByDescending(x => x.RetainedBytes)
+            .ThenBy(x => x.RootKind)
+            .ThenBy(x => x.TypeName, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Bytes, count, and the candidate set for the shortest ownership chain of one (kind, type)
+    /// group. Only objects at the group's minimum BFS depth are kept, so a deep heap does not cause
+    /// a full parent walk per object and the retained set stays small.
+    /// </summary>
+    private sealed class TypeBucket
+    {
+        private readonly List<ulong> _candidates = new();
+
+        public TypeBucket(int roots = 0) => Roots = roots;
+
+        public long Bytes { get; private set; }
+        public long Count { get; private set; }
+        public int Roots { get; private set; }
+        public int BestDepth { get; private set; } = int.MaxValue;
+
+        public void Add(int depth, ulong address, long shallowBytes)
+        {
+            Bytes += shallowBytes;
+            Count++;
+            Consider(depth, address);
+        }
+
+        public void Merge(TypeBucket other)
+        {
+            Bytes += other.Bytes;
+            Count += other.Count;
+            Roots += other.Roots;
+            foreach (var address in other._candidates) Consider(other.BestDepth, address);
+        }
+
+        private void Consider(int depth, ulong address)
+        {
+            if (depth < BestDepth)
+            {
+                BestDepth = depth;
+                _candidates.Clear();
+                _candidates.Add(address);
+            }
+            else if (depth == BestDepth)
+            {
+                _candidates.Add(address);
+            }
+        }
+
+        /// <summary>
+        /// Builds the chain for every candidate at the minimum depth and keeps the ordinally
+        /// smallest. Comparing path content rather than addresses keeps the recorded evidence stable
+        /// between two captures of the same workload.
+        /// </summary>
+        public OwnershipEvidence BuildEvidence(RetentionGraph graph)
+        {
+            OwnershipEvidence? best = null;
+            foreach (var address in _candidates.OrderBy(x => x))
+            {
+                var candidate = graph.BuildEvidenceFrom(address);
+                if (best is null || PreferEvidence(candidate, best)) best = candidate;
+            }
+            return best!;
+        }
+    }
+
+    private static bool PreferEvidence(OwnershipEvidence candidate, OwnershipEvidence current)
+    {
+        if (candidate.Path.Count != current.Path.Count) return candidate.Path.Count < current.Path.Count;
+        for (var i = 0; i < candidate.Path.Count; i++)
+        {
+            var comparison = string.CompareOrdinal(candidate.Path[i], current.Path[i]);
+            if (comparison != 0) return comparison < 0;
+        }
+        return false;
+    }
+
+    private string TypeNameOf(HeapGraphBuilder.Node node) =>
+        _types.TryGetValue(node.TypeId, out var type) ? type : $"Unknown type 0x{node.TypeId:x}";
+
+    /// <summary>
+    /// Walks the BFS parent chain from a representative object up to its dominating root. The chain
+    /// is deterministic for a given graph because <see cref="TraverseRoots"/> visits roots and edges
+    /// in a fixed order and keeps the first parent it assigns.
+    /// </summary>
+    private OwnershipEvidence BuildEvidenceFrom(ulong representative)
+    {
+        var reversed = new List<string>();
+        var current = representative;
+        var depth = 0L;
+        while (true)
+        {
+            reversed.Add(TypeNameOf(_nodes[current]));
+            if (_roots.TryGetValue(current, out var root))
+            {
+                reversed.Add(RootKinds.NameOf(root.Kind));
+                break;
+            }
+            if (!_parent.TryGetValue(current, out var parent)) break;
+            depth++;
+            current = parent;
+        }
+        var path = new List<string>(reversed.Count);
+        for (var i = reversed.Count - 1; i >= 0; i--) path.Add(reversed[i]);
+        var maximumPathHops = OwnershipEvidence.MaximumHops + 2;
+        if (path.Count > maximumPathHops)
+            return OwnershipEvidence.Create(path.Take(maximumPathHops).ToArray(), depth, truncated: true);
+        return OwnershipEvidence.Create(path, depth, truncated: false);
     }
 
     private Dictionary<ulong, List<ulong>> DominatorChildren()

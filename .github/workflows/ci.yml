@@ -49,6 +49,7 @@ jobs:
           dotnet new tool-manifest >/dev/null
           dotnet tool install Tenure --version 0.1.0 --add-source "$OLDPWD/artifacts" --ignore-failed-sources
           dotnet tenure --help | grep -q -- '--by-root-kind'
+          dotnet tenure --help | grep -q -- '--by-ownership'
           printf '{"version":2,"types":[{"name":"A","retainedBytes":10,"objectCount":1}],"rootKindRetention":[{"kind":2,"retainedBytes":100,"objectCount":1}]}' > baseline.json
           printf '{"version":2,"types":[{"name":"A","retainedBytes":60,"objectCount":3}],"rootKindRetention":[{"kind":2,"retainedBytes":500,"objectCount":5}]}' > candidate.json
           if dotnet tenure diff baseline.json candidate.json --by-root-kind --fail-over-root-kind 100; then
@@ -61,3 +62,16 @@ jobs:
             echo "expected --by-root-kind to refuse a version-1 snapshot" >&2
             exit 1
           fi
+          printf '{"version":3,"types":[{"name":"A","retainedBytes":10,"objectCount":1}],"rootKindRetention":[{"kind":2,"retainedBytes":100,"objectCount":1}],"ownershipRetention":[{"kind":2,"type":"A","retainedBytes":100,"objectCount":1,"rootCount":1,"evidence":{"path":["Handle","A"],"depth":0,"truncated":false}}]}' > owned.json
+          printf '{"version":3,"types":[{"name":"A","retainedBytes":60,"objectCount":3}],"rootKindRetention":[{"kind":2,"retainedBytes":900,"objectCount":5}],"ownershipRetention":[{"kind":2,"type":"A","retainedBytes":900,"objectCount":5,"rootCount":2,"evidence":{"path":["Handle","A"],"depth":0,"truncated":false}}]}' > owned-bigger.json
+          if dotnet tenure diff owned.json owned-bigger.json --by-ownership --fail-over-ownership 100; then
+            echo "expected the ownership gate to fail" >&2
+            exit 1
+          fi
+          output=$(dotnet tenure diff owned.json owned-bigger.json --by-ownership)
+          case "$output" in *"Handle -> A"*) ;; *) echo "ownership evidence missing from the report" >&2; exit 1 ;; esac
+          if dotnet tenure diff baseline.json owned-bigger.json --by-ownership; then
+            echo "expected --by-ownership to refuse a version-2 snapshot" >&2
+            exit 1
+          fi
+
