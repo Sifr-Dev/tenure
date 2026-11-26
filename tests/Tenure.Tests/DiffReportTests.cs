@@ -36,7 +36,7 @@ public sealed class DiffReportTests
     [Fact]
     public void BudgetIsStrictlyGreaterThanTheConfiguredLimit()
     {
-        var report = new DiffReport([], 100, 1);
+        var report = new DiffReport([], 100, 1, [], 0, 0);
         Assert.False(report.Exceeds(100));
         Assert.True(report.Exceeds(99));
         Assert.Throws<ArgumentOutOfRangeException>(() => report.Exceeds(-1));
@@ -93,6 +93,47 @@ public sealed class DiffReportTests
         var snapshot = await HeapSnapshot.ReadAsync(stream, TestContext.Current.CancellationToken);
         Assert.Equal(160, snapshot.Types.Single().RetainedBytes);
         Assert.False(snapshot.HasRootKindRetention);
+    }
+
+    [Fact]
+    public void RootKindComparisonRequiresTwoRootAnalyzedSnapshots()
+    {
+        var shallow = Snapshot(HeapType.Create("A", 10, 1));
+        var analyzed = HeapSnapshot.Create([HeapType.Create("A", 10, 1)], [RootKindTotal.Create(RootKinds.Handle, 10, 1)]);
+        Assert.Throws<InvalidDataException>(() => DiffReport.CompareRootKinds(shallow, analyzed));
+        Assert.Throws<InvalidDataException>(() => DiffReport.CompareRootKinds(analyzed, shallow));
+        Assert.False(analyzed.HasRootKindRetention == false);
+        Assert.False(shallow.HasRootKindRetention);
+    }
+
+    [Fact]
+    public void RootKindDeltasReportOnlyPositiveIncreasesInStableOrder()
+    {
+        var baseline = HeapSnapshot.Create(
+            [],
+            [RootKindTotal.Create(RootKinds.Stack, 100, 2), RootKindTotal.Create(RootKinds.Handle, 500, 4), RootKindTotal.Create(RootKinds.Finalizer, 64, 1)]);
+        var candidate = HeapSnapshot.Create(
+            [],
+            [RootKindTotal.Create(RootKinds.Stack, 140, 3), RootKindTotal.Create(RootKinds.Handle, 200, 1), RootKindTotal.Create(RootKinds.Finalizer, 64, 1)]);
+        var report = DiffReport.Compare(baseline, candidate);
+
+        var delta = Assert.Single(report.RootKindRegressions);
+        Assert.Equal(RootKinds.Stack, delta.Kind);
+        Assert.Equal(40, delta.ByteDelta);
+        Assert.Equal(1, delta.CountDelta);
+        Assert.Equal(40, report.TotalRootKindByteDelta);
+        Assert.Equal(1, report.TotalRootKindCountDelta);
+    }
+
+    [Fact]
+    public void RootKindBudgetIsStrictlyGreaterThanTheConfiguredLimit()
+    {
+        var baseline = HeapSnapshot.Create([], [RootKindTotal.Create(RootKinds.Handle, 100, 1)]);
+        var candidate = HeapSnapshot.Create([], [RootKindTotal.Create(RootKinds.Handle, 150, 1)]);
+        var report = DiffReport.Compare(baseline, candidate);
+        Assert.False(report.ExceedsRootKind(50));
+        Assert.True(report.ExceedsRootKind(49));
+        Assert.Throws<ArgumentOutOfRangeException>(() => report.ExceedsRootKind(-1));
     }
 
     [Theory]

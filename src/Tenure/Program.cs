@@ -9,7 +9,7 @@ internal static class CommandLine
     {
         if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
         {
-            Console.WriteLine("Usage: tenure diff <baseline.json> <candidate.json> [--fail-over <bytes>] [--allow <type>]");
+            Console.WriteLine("Usage: tenure diff <baseline.json> <candidate.json> [--fail-over <bytes>] [--allow <type>] [--by-root-kind [--fail-over-root-kind <bytes>]]");
             Console.WriteLine("       tenure capture --pid <process-id> --output <snapshot.json> [--duration <milliseconds>] [--root-analysis]");
             Console.WriteLine("Compare retained bytes and object counts by type. Exit 1 when the budget is exceeded.");
             return 0;
@@ -20,11 +20,13 @@ internal static class CommandLine
 
         if (args[0] != "diff" || args.Length < 3)
         {
-            Console.Error.WriteLine("Expected: tenure diff <baseline.json> <candidate.json> [--fail-over <bytes>] [--allow <type>]");
+            Console.Error.WriteLine("Expected: tenure diff <baseline.json> <candidate.json> [--fail-over <bytes>] [--allow <type>] [--by-root-kind [--fail-over-root-kind <bytes>]]");
             return 2;
         }
 
         long budget = long.MaxValue;
+        long rootKindBudget = long.MaxValue;
+        var byRootKind = false;
         var ignored = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 3; i < args.Length; i++)
         {
@@ -32,6 +34,13 @@ internal static class CommandLine
             {
                 case "--fail-over" when i + 1 < args.Length && long.TryParse(args[++i], out var value) && value >= 0:
                     budget = value;
+                    break;
+                case "--by-root-kind":
+                    byRootKind = true;
+                    break;
+                case "--fail-over-root-kind" when i + 1 < args.Length && long.TryParse(args[++i], out var value) && value >= 0:
+                    byRootKind = true;
+                    rootKindBudget = value;
                     break;
                 case "--allow" when i + 1 < args.Length:
                     ignored.Add(args[++i]);
@@ -51,12 +60,25 @@ internal static class CommandLine
             foreach (var delta in report.Regressions)
                 Console.WriteLine($"{delta.Name} | {delta.BeforeBytes} | {delta.AfterBytes} | +{delta.ByteDelta} | {delta.CountDelta:+#;0;-#;0}");
             Console.WriteLine($"Retained-byte increase: {report.TotalByteDelta}; object-count increase: {report.TotalCountDelta}");
+            var rootKindExceeded = false;
+            if (byRootKind)
+            {
+                if (!report.RootKindComparable)
+                    throw new InvalidDataException("--by-root-kind requires snapshots captured with --root-analysis (snapshot version 2).");
+                Console.WriteLine("Root kind | Before bytes | After bytes | Delta bytes | Delta objects");
+                foreach (var delta in report.RootKindRegressions)
+                    Console.WriteLine($"{RootKinds.NameOf(delta.Kind)} | {delta.BeforeBytes} | {delta.AfterBytes} | +{delta.ByteDelta} | {delta.CountDelta:+#;0;-#;0}");
+                Console.WriteLine($"Exclusive root-kind retention increase: {report.TotalRootKindByteDelta}; object-count increase: {report.TotalRootKindCountDelta}");
+                rootKindExceeded = report.ExceedsRootKind(rootKindBudget);
+                if (rootKindExceeded)
+                    Console.Error.WriteLine($"Root-kind retention budget exceeded: {report.TotalRootKindByteDelta} > {rootKindBudget} bytes.");
+            }
             if (report.Exceeds(budget))
             {
                 Console.Error.WriteLine($"Retention budget exceeded: {report.TotalByteDelta} > {budget} bytes.");
                 return 1;
             }
-            return 0;
+            return rootKindExceeded ? 1 : 0;
         }
         catch (Exception ex) when (ex is IOException or JsonException or InvalidDataException or ArgumentException)
         {
