@@ -74,4 +74,3 @@ jobs:
             echo "expected --by-ownership to refuse a version-2 snapshot" >&2
             exit 1
           fi
-
