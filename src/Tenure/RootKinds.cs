@@ -21,4 +21,13 @@ public static class RootKinds
         Overflow => "Overflow",
         _ => $"Kind {kind}",
     };
+
+    /// <summary>
+    /// True only for the six kinds pinned above, so a snapshot cannot smuggle an unrecognised root
+    /// kind name into ownership evidence and have it read back as a known root.
+    /// </summary>
+    public static bool IsKnown(int kind) => kind is >= Stack and <= Overflow;
+
+    public static bool IsKnownName(string? name) =>
+        name is "Stack" or "Finalizer" or "Handle" or "Older" or "SizedRef" or "Overflow";
 }

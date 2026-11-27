@@ -126,6 +126,86 @@ public sealed class CaptureIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task RealCaptureWithOwnershipPathsWritesVersionThreeEvidenceAndDiffsIt()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var first = Path.Combine(Path.GetTempPath(), $"tenure-own-a-{Guid.NewGuid():N}.json");
+        var second = Path.Combine(Path.GetTempPath(), $"tenure-own-b-{Guid.NewGuid():N}.json");
+        var child = await StartWorkloadAsync(Workspace, cancellationToken);
+        if (child is null) return;
+        try
+        {
+            await child.StandardOutput.ReadLineAsync(cancellationToken);
+
+            var baseline = await CaptureSnapshotWithOwnershipAsync(child, first, cancellationToken);
+            using (var document = JsonDocument.Parse(File.ReadAllText(first)))
+            {
+                var root = document.RootElement;
+                Assert.Equal(3, root.GetProperty("version").GetInt32());
+                // v1 and v2 fields stay present with their old meaning so earlier readers keep working.
+                Assert.True(root.GetProperty("types").GetArrayLength() > 0);
+                Assert.True(root.GetProperty("rootKindRetention").GetArrayLength() > 0);
+                var ownership = root.GetProperty("ownershipRetention");
+                Assert.True(ownership.GetArrayLength() > 0);
+                foreach (var group in ownership.EnumerateArray())
+                {
+                    var path = group.GetProperty("evidence").GetProperty("path").EnumerateArray().Select(x => x.GetString()!).ToArray();
+                    Assert.True(RootKinds.IsKnownName(path[0]));
+                    Assert.True(path.Length >= 2);
+                    Assert.Equal(path.Length - 2, group.GetProperty("evidence").GetProperty("depth").GetInt64());
+                    Assert.False(group.GetProperty("evidence").GetProperty("truncated").GetBoolean());
+                    Assert.True(group.GetProperty("rootCount").GetInt32() >= 1);
+                    Assert.True(group.GetProperty("rootCount").GetInt32() <= group.GetProperty("objectCount").GetInt64());
+                }
+            }
+
+            // Ownership must be a strict refinement of root-kind retention, not a second measurement.
+            Assert.Equal(baseline.RootKindTotals.Sum(k => k.RetainedBytes), baseline.Ownership.Sum(o => o.RetainedBytes));
+            Assert.Equal(baseline.RootKindTotals.Sum(k => k.ObjectCount), baseline.Ownership.Sum(o => o.ObjectCount));
+            Assert.All(baseline.Ownership, o => Assert.Contains(baseline.RootKindTotals, k => k.Kind == o.RootKind));
+            Assert.Contains(baseline.Ownership, o => o.TypeName == "System.Byte[]" || o.TypeName.Contains("Byte", StringComparison.Ordinal));
+
+            var candidate = await CaptureSnapshotWithOwnershipAsync(child, second, cancellationToken);
+            Assert.True(candidate.HasOwnership);
+            var report = DiffReport.Compare(baseline, candidate);
+            Assert.True(report.OwnershipComparable);
+            Assert.True(report.TotalOwnershipByteDelta >= 0);
+            // Every reported ownership delta must name a group that still exists in the candidate,
+            // so the recorded chain is evidence from that capture rather than a baseline leftover.
+            foreach (var delta in report.OwnershipRegressions)
+            {
+                var group = Assert.Single(candidate.Ownership, o => o.RootKind == delta.Kind && o.TypeName == delta.TypeName);
+                Assert.Equal(group.Evidence, delta.Evidence);
+                Assert.True(delta.ByteDelta > 0);
+                Assert.True(delta.AfterCount > 0);
+            }
+            Assert.Equal(report.OwnershipRegressions.Sum(d => d.ByteDelta), report.TotalOwnershipByteDelta);
+
+            // A version-2 snapshot of the same process keeps its kind totals but cannot be
+            // ownership-compared, and the report says so instead of reporting a false zero.
+            var kindsOnly = HeapSnapshot.Create(baseline.Types, baseline.RootKindTotals);
+            Assert.False(DiffReport.Compare(kindsOnly, candidate).OwnershipComparable);
+        }
+        finally
+        {
+            await StopAsync(child, cancellationToken);
+            foreach (var path in new[] { first, second })
+                if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    private static async Task<HeapSnapshot> CaptureSnapshotWithOwnershipAsync(Process workload, string path, CancellationToken cancellationToken)
+    {
+        using (var write = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read))
+        {
+            await HeapCapture.CaptureAsync(workload.Id, write, TimeSpan.FromSeconds(2), cancellationToken, ownershipPaths: true);
+            await write.FlushAsync(cancellationToken);
+        }
+        await using var read = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        return await HeapSnapshot.ReadAsync(read, cancellationToken);
+    }
+
     private static async Task StopAsync(Process child, CancellationToken cancellationToken)
     {
         if (!child.HasExited) child.Kill(true);
