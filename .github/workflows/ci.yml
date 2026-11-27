@@ -47,7 +47,7 @@ jobs:
           work=$(mktemp -d)
           cd "$work"
           dotnet new tool-manifest >/dev/null
-          dotnet tool install Tenure --version 0.1.0 --add-source "$OLDPWD/artifacts" --ignore-failed-sources
+          dotnet tool install Tenure --version "$version" --add-source "$OLDPWD/artifacts" --ignore-failed-sources
           dotnet tenure --help | grep -q -- '--by-root-kind'
           dotnet tenure --help | grep -q -- '--by-ownership'
           printf '{"version":2,"types":[{"name":"A","retainedBytes":10,"objectCount":1}],"rootKindRetention":[{"kind":2,"retainedBytes":100,"objectCount":1}]}' > baseline.json
