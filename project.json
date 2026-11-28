@@ -1,0 +1,9 @@
+{
+  "name": "tenure",
+  "description": ".NET GC retention diagnostics",
+  "stack": [
+    "dotnet"
+  ],
+  "status": "active",
+  "primary_language": "C#"
+}
