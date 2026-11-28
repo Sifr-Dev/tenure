@@ -1,6 +1,9 @@
 {
-  "name": "tenure",
-  "description": ".NET GC retention diagnostics",
+  "name": "Vestige",
+  "displayName": "Vestige",
+  "repo": "tenure",
+  "description": ".NET heap-retention diagnostics and CI budget gates on Linux",
+  "summary": "Captures EventPipe heap snapshots, compares retained bytes by type, root kind and ownership path, and exits nonzero when a configured retention budget is exceeded.",
   "stack": [
     "dotnet"
   ],
